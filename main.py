@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLabel, QLineEdit, QComboBox, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QGroupBox, QFrame,
-    QAbstractItemView, QStatusBar,
+    QAbstractItemView, QStatusBar, QCheckBox,
 )
 
 # ---------------------------------------------------------------------------
@@ -449,23 +449,21 @@ class MainWindow(QMainWindow):
         self.m_donem = QLineEdit()
         self.m_donem.setPlaceholderText("Örn: 2025-2026")
 
-        # Okul seçimi (ilk seçenek "Seçiniz" placeholder'ıdır, gerçek değer değildir).
-        self.m_okul = QComboBox()
-        self.m_okul.addItem("Seçiniz")
-        self.m_okul.addItems(OKULLAR)
+        # Okul seçimi: birden fazla okul aynı anda seçilebilsin diye checkbox grubu.
+        self.m_okul_checks = {}
+        okul_widget = self._build_checkbox_group(OKULLAR, self.m_okul_checks)
 
-        # Seviye seçimi (görsel sıra: LH, 9, 10, 11, 12). İlk seçenek placeholder'dır.
-        self.m_seviye = QComboBox()
-        self.m_seviye.addItem("Seçiniz")
-        self.m_seviye.addItems(SEVIYELER)
+        # Seviye seçimi (sıra: LH, 9, 10, 11, 12); birden fazla seviye seçilebilir.
+        self.m_seviye_checks = {}
+        seviye_widget = self._build_checkbox_group(SEVIYELER, self.m_seviye_checks)
 
         # Etkinlik / Program adı
         self.m_etkinlik = QLineEdit()
         self.m_etkinlik.setPlaceholderText("Örn: Siemens AI Certificate Program")
 
         form.addRow("Dönem:", self.m_donem)
-        form.addRow("Okul:", self.m_okul)
-        form.addRow("Seviye:", self.m_seviye)
+        form.addRow("Okul:", okul_widget)
+        form.addRow("Seviye:", seviye_widget)
         form.addRow("Program Adı:", self.m_etkinlik)
 
         save_btn = QPushButton("Veritabanına Kaydet")
@@ -546,6 +544,25 @@ class MainWindow(QMainWindow):
 
         return page
 
+    # ----- Yardımcı: çoktan seçmeli checkbox grubu --------------------------
+    @staticmethod
+    def _build_checkbox_group(options, target_dict):
+        """
+        Verilen seçenekler için yatay bir checkbox grubu oluşturur ve her
+        checkbox'ı target_dict içine (seçenek adı -> QCheckBox) kaydeder.
+        Böylece aynı anda birden fazla seçenek işaretlenebilir.
+        """
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+        for option in options:
+            cb = QCheckBox(option)
+            target_dict[option] = cb
+            lay.addWidget(cb)
+        lay.addStretch()
+        return wrap
+
     # ----- Yardımcı: etiketli dikey sarmalayıcı -----------------------------
     @staticmethod
     def _labeled(text, widget):
@@ -566,8 +583,8 @@ class MainWindow(QMainWindow):
     def _on_save_activity(self):
         """Management Panel formundaki kaydı veritabanına yazar."""
         donem = self.m_donem.text().strip()
-        okul = self.m_okul.currentText()
-        seviye = self.m_seviye.currentText()
+        secili_okullar = [ad for ad, cb in self.m_okul_checks.items() if cb.isChecked()]
+        secili_seviyeler = [ad for ad, cb in self.m_seviye_checks.items() if cb.isChecked()]
         etkinlik = self.m_etkinlik.text().strip()
 
         # Basit doğrulama
@@ -578,10 +595,10 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if okul == "Seçiniz" or seviye == "Seçiniz":
+        if not secili_okullar or not secili_seviyeler:
             QMessageBox.warning(
                 self, "Eksik Bilgi",
-                "Lütfen 'Okul' ve 'Seviye' alanlarından bir seçim yapın.",
+                "Lütfen en az bir 'Okul' ve bir 'Seviye' seçin.",
             )
             return
 
@@ -592,22 +609,32 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Seçilen her okul x seviye kombinasyonu için ayrı bir kayıt oluşturulur.
         try:
-            self.db.add_activity(donem, okul, seviye, etkinlik)
+            for okul in secili_okullar:
+                for seviye in secili_seviyeler:
+                    self.db.add_activity(donem, okul, seviye, etkinlik)
         except sqlite3.Error as exc:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
 
+        kombinasyonlar = "\n".join(
+            f"{okul} • {seviye}"
+            for okul in secili_okullar
+            for seviye in secili_seviyeler
+        )
         QMessageBox.information(
             self, "Kayıt Başarılı",
-            f"Program kaydedildi:\n\n{donem} • {okul} • {seviye}\n{etkinlik}",
+            f"Program kaydedildi:\n\n{donem}\n{kombinasyonlar}\n{etkinlik}",
         )
 
         # Formu temizle ve dönem combobox'larını tazele.
         self.m_etkinlik.clear()
         self.m_donem.clear()
-        self.m_okul.setCurrentText("Seçiniz")
-        self.m_seviye.setCurrentText("Seçiniz")
+        for cb in self.m_okul_checks.values():
+            cb.setChecked(False)
+        for cb in self.m_seviye_checks.values():
+            cb.setChecked(False)
         self._refresh_donem_combos()
         self.statusBar().showMessage(f"Kaydedildi: {etkinlik} ({donem})")
 

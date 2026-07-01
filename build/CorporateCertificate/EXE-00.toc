@@ -67,7 +67,7 @@
  [],
  False,
  False,
- 1782837382,
+ 1782908816,
  [('runw.exe',
    'c:\\Users\\USARI\\source\\repos\\ugursariiii\\CorporateCertificate\\.venv\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
    'EXECUTABLE')],
