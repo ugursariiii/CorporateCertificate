@@ -1,0 +1,16 @@
+{
+    // F5 ile "Kurumsal Sertifika" uygulamasını çalıştırır.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Kurumsal Sertifika (main.py)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "justMyCode": true
+        }
+    ]
+}
