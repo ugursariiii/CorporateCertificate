@@ -24,13 +24,17 @@ import sys
 import uuid
 import ctypes
 import shutil
+from html import escape
 from datetime import datetime
 from contextlib import closing
 
 import pymssql
 
 from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QFont, QIcon, QDesktopServices
+from PyQt6.QtGui import (
+    QFont, QIcon, QDesktopServices, QTextDocument, QPageSize, QPageLayout,
+)
+from PyQt6.QtPrintSupport import QPrinter, QPrinterInfo, QPrintPreviewDialog
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QLabel, QLineEdit, QComboBox, QPushButton, QTableWidget,
@@ -1041,7 +1045,7 @@ class MainWindow(QMainWindow):
 
         print_btn = QPushButton("Print Report")
         print_btn.setObjectName("GhostBtn")
-        print_btn.clicked.connect(self._on_print_placeholder)
+        print_btn.clicked.connect(self._on_print_report)
 
         actions.addStretch()
         actions.addWidget(export_btn)
@@ -1491,13 +1495,90 @@ class MainWindow(QMainWindow):
         if cevap == QMessageBox.StandardButton.Yes:
             QDesktopServices.openUrl(QUrl.fromLocalFile(hedef))
 
-    def _on_print_placeholder(self):
-        """İleride QPrinter tabanlı yazdırma kodu buraya gelecek."""
-        QMessageBox.information(
-            self, "Print (Şablon)",
-            "Yazdırma işlevi bu sürümde şablon olarak bırakılmıştır.\n"
-            "Buraya QPrinter / QPrintDialog tabanlı yazdırma kodu eklenebilir.",
+    # ----- Yazdırma ---------------------------------------------------------
+    def _rapor_html(self):
+        """
+        Son üretilen raporu, yazdırma için HTML'e dönüştürür. Qt'nin zengin
+        metin motoru CSS'in sınırlı bir alt kümesini desteklediğinden stiller
+        satır içi tutulur.
+        """
+        donem, okul, seviye = self.son_filtre or ("", "", "")
+
+        satirlar = []
+        for r in self.son_rapor:
+            # Placeholder satırlar (id=None) griye çalar; tabloda "—" gösterilir.
+            bulundu = r["id"] is not None
+            renk = "#1d3557" if bulundu else "#98a2b3"
+            dosya = str(r["dosya_sayisi"]) if bulundu else "—"
+            hucreler = "".join(
+                f'<td align="center" style="color:{renk};">{escape(str(v))}</td>'
+                for v in (r["donem"], r["okul"], r["seviye"])
+            )
+            satirlar.append(
+                f"<tr>{hucreler}"
+                f'<td style="color:{renk};">{escape(str(r["etkinlik"]))}</td>'
+                f'<td align="center" style="color:{renk};">{dosya}</td></tr>'
+            )
+
+        basliklar = "".join(
+            f'<th align="center" bgcolor="#e8eef6">{escape(b)}</th>'
+            for b in self.EXPORT_BASLIKLARI
         )
+        return f"""
+        <html><body style="font-family:Segoe UI, Arial; font-size:10pt;">
+          <h2 style="color:#1d3557; margin-bottom:2px;">
+            Kurumsal Sertifika Programı Raporu
+          </h2>
+          <p style="color:#4a5568; margin-top:0;">
+            <b>Dönem:</b> {escape(donem)} &nbsp;&nbsp;
+            <b>Okul:</b> {escape(okul)} &nbsp;&nbsp;
+            <b>Seviye:</b> {escape(seviye)}<br/>
+            <b>Oluşturulma:</b> {datetime.now():%d.%m.%Y %H:%M}
+          </p>
+          <table width="100%" cellspacing="0" cellpadding="6" border="1"
+                 style="border-color:#c6d0dd;">
+            <tr>{basliklar}</tr>
+            {''.join(satirlar)}
+          </table>
+          <p style="color:#98a2b3; font-size:8pt;">
+            Toplam {len(self.son_rapor)} aşama tarandı.
+          </p>
+        </body></html>
+        """
+
+    def _on_print_report(self):
+        """Listeleme tablosundaki raporu baskı önizlemesiyle yazdırır."""
+        if not self.son_rapor:
+            QMessageBox.information(
+                self, "Yazdırılacak Kayıt Yok",
+                "Önce 'Listele' butonuyla bir rapor üretin.",
+            )
+            return
+
+        if not QPrinterInfo.availablePrinterNames():
+            QMessageBox.warning(
+                self, "Yazıcı Bulunamadı",
+                "Bu bilgisayarda tanımlı bir yazıcı yok.\n\n"
+                "Bir yazıcı ekleyin ya da raporu 'Export to Excel / CSV' "
+                "ile dışa aktarın.",
+            )
+            return
+
+        belge = QTextDocument()
+        belge.setHtml(self._rapor_html())
+
+        yazici = QPrinter(QPrinter.PrinterMode.HighResolution)
+        yazici.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        yazici.setPageOrientation(QPageLayout.Orientation.Portrait)
+        donem, okul, seviye = self.son_filtre or ("", "", "")
+        yazici.setDocName(f"Rapor {donem} {okul} {seviye}".strip())
+
+        onizleme = QPrintPreviewDialog(yazici, self)
+        onizleme.setWindowTitle("Rapor Önizleme")
+        onizleme.resize(900, 650)
+        # Önizleme her sayfa çizimi istediğinde belge yeniden basılır.
+        onizleme.paintRequested.connect(belge.print)
+        onizleme.exec()
 
     # =====================================================================
     # YARDIMCI METOTLAR
