@@ -1009,15 +1009,15 @@ class MainWindow(QMainWindow):
         outer.addWidget(filter_box)
 
         # Sonuç tablosu (son sütun: satır bazlı "Sil" butonu)
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Aşama", "Dönem", "Okul", "Seviye", "Kurumsal Sertifika Programı",
+            ["Dönem", "Okul", "Seviye", "Kurumsal Sertifika Programı",
              "Dosyalar", "İşlem"]
         )
         self.table.horizontalHeader().setSectionResizeMode(
-            4, QHeaderView.ResizeMode.Stretch
+            3, QHeaderView.ResizeMode.Stretch
         )
-        for col in (0, 1, 2, 3, 5, 6):
+        for col in (0, 1, 2, 4, 5):
             self.table.horizontalHeader().setSectionResizeMode(
                 col, QHeaderView.ResizeMode.ResizeToContents
             )
@@ -1349,7 +1349,6 @@ class MainWindow(QMainWindow):
             row_idx = self.table.rowCount()
             self.table.insertRow(row_idx)
             values = [
-                f"Aşama {r['asama']}",
                 r["donem"],
                 r["okul"],
                 r["seviye"],
@@ -1357,7 +1356,7 @@ class MainWindow(QMainWindow):
             ]
             for col, val in enumerate(values):
                 item = QTableWidgetItem(str(val))
-                if col < 4:
+                if col < 3:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row_idx, col, item)
 
@@ -1370,11 +1369,11 @@ class MainWindow(QMainWindow):
                     dosya_btn.clicked.connect(
                         lambda _checked=False, r=r: self._on_show_files(r)
                     )
-                    self.table.setCellWidget(row_idx, 5, dosya_btn)
+                    self.table.setCellWidget(row_idx, 4, dosya_btn)
                 else:
                     bos = QTableWidgetItem("—")
                     bos.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.table.setItem(row_idx, 5, bos)
+                    self.table.setItem(row_idx, 4, bos)
 
                 sil_btn = QPushButton("Sil")
                 sil_btn.setObjectName("GhostBtn")
@@ -1383,7 +1382,7 @@ class MainWindow(QMainWindow):
                         r["id"], r["donem"], r["okul"], r["seviye"], r["etkinlik"]
                     )
                 )
-                self.table.setCellWidget(row_idx, 6, sil_btn)
+                self.table.setCellWidget(row_idx, 5, sil_btn)
 
         self.statusBar().showMessage(
             f"Rapor üretildi: {len(rows)} aşama tarandı "
