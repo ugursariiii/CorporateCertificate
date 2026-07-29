@@ -714,9 +714,8 @@ class EkDosyalarDialog(QDialog):
         btns = QHBoxLayout()
         ac_btn = QPushButton("Aç")
         ac_btn.clicked.connect(self._on_open)
-        kaydet_btn = QPushButton("Farklı Kaydet")
-        kaydet_btn.setObjectName("SecondaryBtn")
-        kaydet_btn.clicked.connect(self._on_save_as)
+        # "Farklı Kaydet" butonu gizlendi; işleyicisi (_on_save_as) yeniden
+        # gerekirse bağlanmak üzere duruyor.
         sil_btn = QPushButton("Kayıttan Sil")
         sil_btn.setObjectName("GhostBtn")
         sil_btn.clicked.connect(self._on_delete)
@@ -724,7 +723,7 @@ class EkDosyalarDialog(QDialog):
         kapat_btn.setObjectName("GhostBtn")
         kapat_btn.clicked.connect(self.accept)
 
-        for b in (ac_btn, kaydet_btn, sil_btn):
+        for b in (ac_btn, sil_btn):
             btns.addWidget(b)
         btns.addStretch()
         btns.addWidget(kapat_btn)
