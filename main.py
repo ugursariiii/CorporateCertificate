@@ -234,6 +234,52 @@ def depoya_kopyala(kaynak_yol, saklanan_ad):
     return hedef
 
 
+def dosya_secimlerini_dogrula(parent, yollar, mevcut_adlar=()):
+    """
+    Seçilen dosya yollarını tür/boyut yönünden doğrular ve kabul edilenleri
+    (dosya_adi, kaynak_yol, boyut) üçlüleri olarak döndürür. Elenen her dosya
+    için kullanıcıya nedenini söyleyen bir uyarı gösterilir.
+
+    `mevcut_adlar` zaten listede/kayıtta bulunan adlardır; aynı dosyanın iki
+    kez eklenmesini önlemek için sessizce atlanırlar.
+    """
+    kabul, adlar = [], set(mevcut_adlar)
+    for yol in yollar:
+        ad = os.path.basename(yol)
+        if ad in adlar:
+            continue                         # aynı dosya iki kez eklenmesin
+
+        # Pencere filtresi seçilebilecekleri sınırlar ama kullanıcı dosya adını
+        # elle de yazabildiğinden tür burada ayrıca doğrulanır.
+        if not uzanti_izinli(ad):
+            QMessageBox.warning(
+                parent, "Desteklenmeyen Dosya Türü",
+                f"'{ad}' eklenemedi.\n\n"
+                f"Yalnızca şu türler yüklenebilir:\n{IZINLI_TURLER_METNI}",
+            )
+            continue
+
+        try:
+            boyut = os.path.getsize(yol)
+        except OSError as exc:
+            QMessageBox.warning(
+                parent, "Dosya Okunamadı", f"'{ad}' okunamadı:\n{exc}"
+            )
+            continue
+
+        if boyut > MAX_DOSYA_BOYUTU:
+            QMessageBox.warning(
+                parent, "Dosya Çok Büyük",
+                f"'{ad}' ({boyut_metni(boyut)}) eklenemedi.\n"
+                f"Tek bir dosya en fazla {boyut_metni(MAX_DOSYA_BOYUTU)} olabilir.",
+            )
+            continue
+
+        kabul.append((ad, yol, boyut))
+        adlar.add(ad)
+    return kabul
+
+
 def depodan_sil(saklanan_adlar):
     """
     Verilen dosyaları paylaşılan klasörden siler. Klasöre o an erişilemiyorsa
@@ -692,14 +738,15 @@ QStatusBar {
 class EkDosyalarDialog(QDialog):
     """
     Bir kayda bağlı dosya eklerini listeler; seçilen eki açmayı, diske
-    kaydetmeyi veya kayıttan silmeyi sağlar.
+    kaydetmeyi, kayda sonradan yeni dosya eklemeyi veya kayıttan silmeyi sağlar.
     """
 
     def __init__(self, parent, db, activity_id, baslik):
         super().__init__(parent)
         self.db = db
         self.activity_id = activity_id
-        # Silme yapıldıysa çağıran taraf raporu tazeleyebilsin diye işaretlenir.
+        # Ekleme/silme yapıldıysa çağıran taraf raporu tazeleyebilsin diye
+        # işaretlenir (satırdaki dosya sayısı değişir).
         self.degisti = False
 
         self.setWindowTitle("Ekli Dosyalar")
@@ -722,6 +769,9 @@ class EkDosyalarDialog(QDialog):
         ac_btn.clicked.connect(self._on_open)
         # "Farklı Kaydet" butonu gizlendi; işleyicisi (_on_save_as) yeniden
         # gerekirse bağlanmak üzere duruyor.
+        ekle_btn = QPushButton("Dosya Ekle...")
+        ekle_btn.setObjectName("SecondaryBtn")
+        ekle_btn.clicked.connect(self._on_add_files)
         sil_btn = QPushButton("Kayıttan Sil")
         sil_btn.setObjectName("GhostBtn")
         sil_btn.clicked.connect(self._on_delete)
@@ -729,7 +779,7 @@ class EkDosyalarDialog(QDialog):
         kapat_btn.setObjectName("GhostBtn")
         kapat_btn.clicked.connect(self.accept)
 
-        for b in (ac_btn, sil_btn):
+        for b in (ac_btn, ekle_btn, sil_btn):
             btns.addWidget(b)
         btns.addStretch()
         btns.addWidget(kapat_btn)
@@ -817,6 +867,72 @@ class EkDosyalarDialog(QDialog):
             QMessageBox.warning(self, "Dosya Kaydedilemedi", str(exc))
             return
         QMessageBox.information(self, "Kaydedildi", f"Dosya kaydedildi:\n{hedef}")
+
+    def _on_add_files(self):
+        """
+        Var olan bir kayda sonradan dosya ekler: seçilen dosyalar önce
+        paylaşılan klasöre kopyalanır, ardından veritabanına yazılıp kayda
+        bağlanır (kayıt formundaki sırayla aynı).
+        """
+        yollar, _ = QFileDialog.getOpenFileNames(
+            self, "Kayda Eklenecek Dosyaları Seçin", "", DOSYA_FILTRESI
+        )
+        if not yollar:
+            return
+
+        try:
+            mevcut_adlar = {ad for _id, ad, _sa, _b, _t
+                            in self.db.list_files(self.activity_id)}
+        except pymssql.Error as exc:
+            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+            return
+
+        secilenler = dosya_secimlerini_dogrula(self, yollar, mevcut_adlar)
+        if not secilenler:
+            return
+
+        # Önce paylaşılan klasöre kopyalanır: klasöre erişilemiyorsa
+        # veritabanına hiçbir şey yazılmasın.
+        kopyalanan = []                  # [(dosya_adi, saklanan_ad, boyut)]
+        try:
+            for ad, yol, boyut in secilenler:
+                saklanan_ad = saklama_adi_uret(ad)
+                depoya_kopyala(yol, saklanan_ad)
+                kopyalanan.append((ad, saklanan_ad, boyut))
+        except OSError as exc:
+            depodan_sil([s for _, s, _ in kopyalanan])
+            QMessageBox.critical(
+                self, "Dosya Kopyalanamadı",
+                f"Dosyalar paylaşılan klasöre kopyalanamadı:\n\n"
+                f"{DOSYA_KLASORU}\n\n{exc}\n\n"
+                "Hiçbir dosya eklenmedi. Klasöre erişiminizi kontrol edin.",
+            )
+            return
+
+        yazilanlar = []                  # veritabanı satırı oluşmuş saklanan adlar
+        try:
+            for ad, saklanan_ad, boyut in kopyalanan:
+                file_id = self.db.add_file(ad, saklanan_ad, boyut)
+                # Satır oluştuktan sonra kopya artık geri alınmaz; yoksa
+                # veritabanı klasörde olmayan bir dosyayı gösterir.
+                yazilanlar.append(saklanan_ad)
+                self.db.link_file(self.activity_id, file_id)
+        except pymssql.Error as exc:
+            depodan_sil([s for _, s, _ in kopyalanan if s not in yazilanlar])
+            self.degisti = bool(yazilanlar)
+            self._reload()
+            QMessageBox.critical(
+                self, "Veritabanı Hatası",
+                f"{exc}\n\n{len(yazilanlar)} / {len(kopyalanan)} dosya eklendi.",
+            )
+            return
+
+        self.degisti = True
+        self._reload()
+        QMessageBox.information(
+            self, "Dosya Eklendi",
+            f"{len(kopyalanan)} dosya bu kayda eklendi.",
+        )
 
     def _on_delete(self):
         veri = self._secili_dosya()
@@ -1137,42 +1253,11 @@ class MainWindow(QMainWindow):
         if not yollar:
             return
 
-        mevcut_adlar = {ad for ad, _, _ in self.m_dosyalar}
-        for yol in yollar:
-            ad = os.path.basename(yol)
-            if ad in mevcut_adlar:
-                continue                     # aynı dosya iki kez eklenmesin
-
-            # Filtre pencerede seçilebilecekleri sınırlar ama kullanıcı dosya
-            # adını elle de yazabildiğinden tür burada ayrıca doğrulanır.
-            if not uzanti_izinli(ad):
-                QMessageBox.warning(
-                    self, "Desteklenmeyen Dosya Türü",
-                    f"'{ad}' eklenemedi.\n\n"
-                    f"Yalnızca şu türler yüklenebilir:\n{IZINLI_TURLER_METNI}",
-                )
-                continue
-
-            try:
-                boyut = os.path.getsize(yol)
-            except OSError as exc:
-                QMessageBox.warning(
-                    self, "Dosya Okunamadı", f"'{ad}' okunamadı:\n{exc}"
-                )
-                continue
-
-            if boyut > MAX_DOSYA_BOYUTU:
-                QMessageBox.warning(
-                    self, "Dosya Çok Büyük",
-                    f"'{ad}' ({boyut_metni(boyut)}) eklenemedi.\n"
-                    f"Tek bir dosya en fazla {boyut_metni(MAX_DOSYA_BOYUTU)} "
-                    f"olabilir.",
-                )
-                continue
-
-            self.m_dosyalar.append((ad, yol, boyut))
-            mevcut_adlar.add(ad)
-
+        self.m_dosyalar.extend(
+            dosya_secimlerini_dogrula(
+                self, yollar, {ad for ad, _, _ in self.m_dosyalar}
+            )
+        )
         self._refresh_picked_files()
 
     def _on_remove_picked_files(self):
@@ -1375,17 +1460,19 @@ class MainWindow(QMainWindow):
             # Gerçek bir kayda karşılık gelen satırlara "Sil" butonu eklenir;
             # "Kayıt bulunamadı" satırlarında (id=None) silinecek bir şey yoktur.
             if r["id"] is not None:
+                # Dosyası olmayan kayıtlara da sonradan dosya eklenebilsin diye
+                # aynı pencereyi açan bir buton konur; pencerede "Dosya Ekle..."
+                # butonu bulunur.
                 if r["dosya_sayisi"]:
                     dosya_btn = QPushButton(f"Dosyalar ({r['dosya_sayisi']})")
                     dosya_btn.setObjectName("SecondaryBtn")
-                    dosya_btn.clicked.connect(
-                        lambda _checked=False, r=r: self._on_show_files(r)
-                    )
-                    self.table.setCellWidget(row_idx, 4, dosya_btn)
                 else:
-                    bos = QTableWidgetItem("—")
-                    bos.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.table.setItem(row_idx, 4, bos)
+                    dosya_btn = QPushButton("Dosya Ekle")
+                    dosya_btn.setObjectName("GhostBtn")
+                dosya_btn.clicked.connect(
+                    lambda _checked=False, r=r: self._on_show_files(r)
+                )
+                self.table.setCellWidget(row_idx, 4, dosya_btn)
 
                 sil_btn = QPushButton("Sil")
                 sil_btn.setObjectName("GhostBtn")
