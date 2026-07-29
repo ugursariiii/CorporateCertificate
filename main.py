@@ -19,10 +19,12 @@ ile üretilen exe tek başına her Windows makinesinde çalışır.
 
 import os
 import re
+import csv
 import sys
 import uuid
 import ctypes
 import shutil
+from datetime import datetime
 from contextlib import closing
 
 import pymssql
@@ -1027,11 +1029,15 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setVisible(False)
         outer.addWidget(self.table)
 
-        # Dışa aktarma / yazdırma buton şablonları (ileride doldurulacak)
+        # Dışa aktarılacak veri, tablodaki widget'lardan okunmak yerine son
+        # üretilen rapor satırlarından alınır.
+        self.son_rapor = []
+        self.son_filtre = ()          # (donem, okul, seviye)
+
         actions = QHBoxLayout()
         export_btn = QPushButton("Export to Excel / CSV")
         export_btn.setObjectName("SecondaryBtn")
-        export_btn.clicked.connect(self._on_export_placeholder)
+        export_btn.clicked.connect(self._on_export_report)
 
         print_btn = QPushButton("Print Report")
         print_btn.setObjectName("GhostBtn")
@@ -1343,6 +1349,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
 
+        self.son_rapor = rows
+        self.son_filtre = (donem, okul, seviye)
+
         self.table.setRowCount(0)
         for r in rows:
             row_idx = self.table.rowCount()
@@ -1399,13 +1408,88 @@ class MainWindow(QMainWindow):
             # Ek silindiyse satırdaki dosya sayısı güncellensin.
             self._on_generate_report()
 
-    def _on_export_placeholder(self):
-        """İleride Excel/CSV dışa aktarma kodu buraya gelecek."""
-        QMessageBox.information(
-            self, "Export (Şablon)",
-            "Excel/CSV dışa aktarma işlevi bu sürümde şablon olarak bırakılmıştır.\n"
-            "Buraya pandas/openpyxl tabanlı dışa aktarma kodu eklenebilir.",
+    # ----- Dışa aktarma -----------------------------------------------------
+    EXPORT_BASLIKLARI = [
+        "Dönem", "Okul", "Seviye", "Kurumsal Sertifika Programı", "Dosya Sayısı",
+    ]
+
+    def _export_satirlari(self):
+        """Son üretilen raporu, CSV'ye yazılacak satır listesine dönüştürür."""
+        satirlar = []
+        for r in self.son_rapor:
+            satirlar.append([
+                r["donem"],
+                r["okul"],
+                r["seviye"],
+                r["etkinlik"],
+                # Placeholder satırlarda dosya sayısı 0'dır; tabloda "—" gösterilir.
+                r["dosya_sayisi"] if r["id"] is not None else "",
+            ])
+        return satirlar
+
+    def _varsayilan_export_adi(self):
+        """Kaydetme penceresine önerilecek dosya adını üretir."""
+        donem, okul, seviye = self.son_filtre or ("", "", "")
+        parcalar = [p for p in ("Rapor", donem, okul, seviye) if p]
+        ad = "_".join(parcalar) + f"_{datetime.now():%Y%m%d_%H%M}.csv"
+        # Windows'ta dosya adında kullanılamayan karakterler temizlenir.
+        return re.sub(r'[\\/:*?"<>|]', "-", ad)
+
+    def _on_export_report(self):
+        """
+        Listeleme tablosundaki raporu, Excel'in doğrudan açabildiği bir CSV
+        dosyasına aktarır. Türkçe karakterler için UTF-8 BOM, Türkçe Excel'in
+        sütunları ayırabilmesi için ';' ayırıcı kullanılır.
+        """
+        if not self.son_rapor:
+            QMessageBox.information(
+                self, "Aktarılacak Kayıt Yok",
+                "Önce 'Listele' butonuyla bir rapor üretin.",
+            )
+            return
+
+        hedef, _ = QFileDialog.getSaveFileName(
+            self, "Raporu Dışa Aktar",
+            self._varsayilan_export_adi(),
+            "CSV Dosyası (*.csv)",
         )
+        if not hedef:
+            return
+        if not hedef.lower().endswith(".csv"):
+            hedef += ".csv"
+
+        donem, okul, seviye = self.son_filtre or ("", "", "")
+        try:
+            # newline="" olmadan csv modülü Windows'ta satır aralarına fazladan
+            # boş satır yazar. utf-8-sig, Excel'in kodlamayı tanıması içindir.
+            with open(hedef, "w", newline="", encoding="utf-8-sig") as f:
+                yazici = csv.writer(f, delimiter=";")
+                yazici.writerow(["Kurumsal Sertifika Programı Raporu"])
+                yazici.writerow([f"Dönem: {donem}", f"Okul: {okul}",
+                                 f"Seviye: {seviye}"])
+                yazici.writerow([f"Oluşturulma: {datetime.now():%d.%m.%Y %H:%M}"])
+                yazici.writerow([])
+                yazici.writerow(self.EXPORT_BASLIKLARI)
+                yazici.writerows(self._export_satirlari())
+        except OSError as exc:
+            # Dosya başka bir programda (çoğunlukla Excel'de) açıksa
+            # PermissionError gelir; o da bir OSError'dır.
+            QMessageBox.critical(
+                self, "Dışa Aktarılamadı",
+                f"Dosya yazılamadı:\n{hedef}\n\n{exc}\n\n"
+                "Dosya Excel'de açıksa kapatıp tekrar deneyin.",
+            )
+            return
+
+        self.statusBar().showMessage(f"Rapor dışa aktarıldı: {hedef}")
+        cevap = QMessageBox.question(
+            self, "Dışa Aktarıldı",
+            f"Rapor kaydedildi:\n{hedef}\n\nDosya şimdi açılsın mı?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if cevap == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(hedef))
 
     def _on_print_placeholder(self):
         """İleride QPrinter tabanlı yazdırma kodu buraya gelecek."""
