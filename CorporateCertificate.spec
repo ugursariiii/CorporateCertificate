@@ -1,44 +1,53 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""
+PyInstaller yapılandırması — tek dosyalık (onefile) dağıtım.
 
+Çıktı: dist/CorporateCertificate.exe
+
+Bu tek dosya, kurulum gerektirmeden herhangi bir 64-bit Windows makinesine
+kopyalanıp çalıştırılabilir. Python, PyQt6 ve pymssql (FreeTDS TDS istemcisi
+dahil) exe'nin içindedir; hedef makineye ayrıca ODBC sürücüsü kurmak gerekmez.
+Uygulama veriyi daima main.py'deki merkezî MSSQL sunucusundan okur; yanına
+herhangi bir veritabanı dosyası kopyalanmaz.
+"""
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    # pymssql'in C uzantıları dinamik olarak yüklendiğinden statik analizde
+    # gözden kaçabilir; garanti olsun diye açıkça belirtiliyor.
+    hiddenimports=['pymssql._pymssql', 'pymssql._mssql'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # Kullanılmayan bağımlılıklar exe boyutunu şişirmesin.
+    excludes=['tkinter', 'pyodbc', 'sqlite3', 'unittest', 'pydoc', 'pdb'],
     noarchive=False,
     optimize=0,
 )
 pyz = PYZ(a.pure)
 
+# Tek dosya (onefile): binaries/datas EXE'nin içine gömülür, COLLECT kullanılmaz.
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='CorporateCertificate',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX, Qt DLL'lerinde zaman zaman bozulmaya yol açtığı için kapalı.
+    upx=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='CorporateCertificate',
 )
