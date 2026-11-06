@@ -1,2 +1,6 @@
-PyQt6
-pymssql
+# Çalışma zamanı bağımlılıkları (sürümler sabitlenir; yükseltme öncesi bkz. AGENTS.md §13)
+PyQt6==6.11.0
+pymssql==2.3.13
+
+# Yalnızca exe derlemek için
+pyinstaller==6.21.0

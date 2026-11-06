@@ -1,0 +1,14 @@
+# CorporateCertificate yapılandırması — şablon.
+# Bu dosyayı "corpcert.ini" adıyla CorporateCertificate.exe'nin yanına kopyalayıp
+# doldurun. Gerçek değerlerle doldurulmuş corpcert.ini git'e EKLENMEZ.
+
+[database]
+server = 94.102.74.165
+name = CorporateCertificate
+user =
+password =
+# 1 yalnızca yeni/test veritabanında şemayı kurmak için. Production'da 0 kalır.
+init_schema = 0
+
+[files]
+folder = \\172.16.0.201\Kurumsal_Video\ProgramFiles\CorporateCertificate\dosyalar

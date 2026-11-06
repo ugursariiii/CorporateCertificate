@@ -5,8 +5,9 @@
    Bu betik idempotenttir: tekrar tekrar çalıştırılabilir, mevcut veriyi bozmaz.
 
    Elle çalıştırmak için:
-       sqlcmd -S 94.102.74.165 -U sa -P <parola> -d CorporateCertificate -i schema.sql
-   Uygulama açılışta aynı DDL'i kendisi de çalıştırır (Database._init_schema).
+       sqlcmd -S 94.102.74.165 -U <yetkili_kullanici> -P <parola> -d CorporateCertificate -i schema.sql
+   Uygulama aynı DDL'i yalnızca init_schema açıkken çalıştırır (Database._init_schema).
+   Production şemasına uygulanması insan onayıyla yapılır (AGENTS.md §9).
    =========================================================================== */
 
 IF OBJECT_ID(N'dbo.activities', N'U') IS NULL

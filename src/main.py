@@ -24,6 +24,9 @@ import sys
 import uuid
 import ctypes
 import shutil
+import logging
+import configparser
+from logging.handlers import RotatingFileHandler
 from html import escape
 from datetime import datetime
 from contextlib import closing
@@ -47,17 +50,88 @@ from PyQt6.QtWidgets import (
 # SABİTLER (Domain kuralları)
 # ---------------------------------------------------------------------------
 
-# --- MSSQL bağlantı ayarları ------------------------------------------------
-# Uygulama, hangi makinede çalışırsa çalışsın veriyi daima aşağıdaki merkezî
-# SQL Server 2022 sunucusundan okur/yazar; yerel bir veritabanı dosyası yoktur.
-# Tablolar açılışta (yoksa) oluşturulur. Bkz. schema.sql
+# --- Yapılandırma -------------------------------------------------------------
+# Uygulama, hangi makinede çalışırsa çalışsın veriyi daima merkezî SQL Server
+# 2022 sunucusundan okur/yazar; yerel bir veritabanı dosyası yoktur.
 #
-# Ayarlar ortam değişkeniyle geçersiz kılınabilir: böylece exe'yi yeniden
-# derlemeden farklı bir sunucuya (ör. test ortamı) yönlendirilebilir.
-DB_SERVER = os.environ.get("CORPCERT_SERVER", "94.102.74.165")
-DB_NAME = os.environ.get("CORPCERT_DB", "CorporateCertificate")
-DB_USER = os.environ.get("CORPCERT_USER", "sa")
-DB_PASSWORD = os.environ.get("CORPCERT_PASSWORD", "GcUC7w@DA3!?Kvjqhyb!!")
+# Kullanıcı adı/parola kaynak koda ve exe'ye GÖMÜLMEZ (AGENTS.md §10): exe'nin
+# (geliştirmede main.py'nin) yanındaki corpcert.ini dosyasından okunur. Her ayar
+# ortam değişkeniyle geçersiz kılınabilir; öncelik: ortam değişkeni > ini >
+# varsayılan. Örnek dosya: docs/corpcert.ini.example
+UYGULAMA_KLASORU = os.path.dirname(
+    sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+)
+AYAR_DOSYASI = os.path.join(UYGULAMA_KLASORU, "corpcert.ini")
+
+
+def ayarlari_yukle(ini_yolu=AYAR_DOSYASI, ortam=None):
+    """Ayarları ortam değişkenleri, ini dosyası ve varsayılanlardan derler."""
+    ortam = os.environ if ortam is None else ortam
+    # interpolation=None: parolada geçebilecek '%' karakteri bozulmasın.
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read(ini_yolu, encoding="utf-8")          # dosya yoksa boş kalır
+
+    def oku(ortam_adi, bolum, anahtar, varsayilan=""):
+        return (ortam.get(ortam_adi)
+                or ini.get(bolum, anahtar, fallback="").strip()
+                or varsayilan)
+
+    return {
+        "server": oku("CORPCERT_SERVER", "database", "server", "94.102.74.165"),
+        "database": oku("CORPCERT_DB", "database", "name", "CorporateCertificate"),
+        "user": oku("CORPCERT_USER", "database", "user"),
+        "password": oku("CORPCERT_PASSWORD", "database", "password"),
+        # Şema DDL'i yalnızca açıkça istenirse çalışır (AGENTS.md §9.1).
+        "init_schema": oku("CORPCERT_INIT_SCHEMA", "database", "init_schema",
+                           "0").lower() in ("1", "true", "yes", "evet"),
+        "dosya_klasoru": oku(
+            "CORPCERT_DOSYA_KLASORU", "files", "folder",
+            r"\\172.16.0.201\Kurumsal_Video\ProgramFiles\CorporateCertificate\dosyalar",
+        ),
+    }
+
+
+AYARLAR = ayarlari_yukle()
+DB_SERVER = AYARLAR["server"]
+DB_NAME = AYARLAR["database"]
+DB_USER = AYARLAR["user"]
+DB_PASSWORD = AYARLAR["password"]
+
+# --- Günlük (log) -------------------------------------------------------------
+# Kullanıcıya ham exception metni gösterilmez; teknik ayrıntı buraya yazılır
+# (AGENTS.md §8). Parola/secret hiçbir zaman loglanmaz.
+LOG_DOSYASI = os.path.join(
+    os.environ.get("LOCALAPPDATA") or UYGULAMA_KLASORU,
+    "CorporateCertificate", "app.log",
+)
+log = logging.getLogger("corpcert")
+
+
+def gunlugu_kur():
+    """Dönen (rotating) dosya günlüğünü kurar; yazılamazsa stderr'e düşer."""
+    try:
+        os.makedirs(os.path.dirname(LOG_DOSYASI), exist_ok=True)
+        handler = RotatingFileHandler(
+            LOG_DOSYASI, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+        )
+    except OSError:
+        handler = logging.StreamHandler()
+    logging.basicConfig(
+        level=logging.INFO, handlers=[handler],
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def hata_bildir(parent, baslik, mesaj):
+    """
+    Bir except bloğu içinden çağrılır: yakalanan exception'ı ayrıntısıyla
+    günlüğe yazar, kullanıcıya yalnızca anlaşılır bir mesaj gösterir.
+    """
+    log.exception(mesaj)
+    QMessageBox.critical(
+        parent, baslik,
+        f"{mesaj}\n\nTeknik ayrıntı günlük dosyasına yazıldı:\n{LOG_DOSYASI}",
+    )
 
 # Bağlantı kurulamazsa kullanıcıyı süresiz bekletmemek için (saniye).
 LOGIN_TIMEOUT = 15   # oturum açma aşaması
@@ -82,13 +156,16 @@ ONCEKI_SEVIYE = {
 }
 
 # --- Dosya eki ayarları -----------------------------------------------------
-# Kayda eklenen dosyalar veritabanına değil, aşağıdaki paylaşılan ağ klasörüne
-# kopyalanır; veritabanında yalnızca dosyanın adı/boyutu ve klasördeki saklanan
-# adı tutulur. Klasör, DB ayarları gibi ortam değişkeniyle değiştirilebilir.
-DOSYA_KLASORU = os.environ.get(
-    "CORPCERT_DOSYA_KLASORU",
-    r"\\172.16.0.201\Kurumsal_Video\ProgramFiles\CorporateCertificate\dosyalar",
-)
+# Kayda eklenen dosyalar veritabanına değil, paylaşılan ağ klasörüne kopyalanır;
+# veritabanında yalnızca dosyanın adı/boyutu ve klasördeki saklanan adı tutulur.
+# Klasör, DB ayarları gibi ini/ortam değişkeniyle değiştirilebilir.
+DOSYA_KLASORU = AYARLAR["dosya_klasoru"]
+
+# Dönem biçimi: "2025-2026" (ikinci yıl birinciden tam bir fazla).
+DONEM_DESENI = re.compile(r"^(\d{4})-(\d{4})$")
+
+# Kolon uzunlukları (schema.sql): girdiler DB'ye gitmeden bunlarla sınırlanır.
+ETKINLIK_ADI_AZAMI = 255
 
 # Yüklenmesine izin verilen dosya türleri (uzantı -> pencerede görünen etiket).
 # Yeni bir tür açmak için tek yapılması gereken buraya eklemektir; hem doğrulama
@@ -110,9 +187,9 @@ MAX_DOSYA_BOYUTU = 50 * 1024 * 1024  # 50 MB
 # VERİTABANI KATMANI (MSSQL / pymssql)
 # ---------------------------------------------------------------------------
 
-# Tablo DDL'i: schema.sql ile birebir aynıdır. sqlcmd olmadan da (uygulama ilk
-# açıldığında) şemanın kurulabilmesi için burada da tutulur. GO ayracı sqlcmd'e
-# özgü olduğundan ifadeler ayrı ayrı çalıştırılır.
+# Tablo DDL'i: docs/schema.sql ile birebir aynıdır. sqlcmd olmadan da (init_schema
+# açıkken, örn. yeni/test veritabanında) şemanın kurulabilmesi için burada da
+# tutulur. GO ayracı sqlcmd'e özgü olduğundan ifadeler ayrı ayrı çalıştırılır.
 DDL_STATEMENTS = [
     """
     IF OBJECT_ID(N'dbo.activities', N'U') IS NULL
@@ -291,8 +368,10 @@ def depodan_sil(saklanan_adlar):
             continue
         try:
             os.remove(depo_yolu(ad))
+        except FileNotFoundError:
+            pass                             # zaten yok: hedeflenen durum
         except OSError:
-            pass
+            log.warning("Paylaşılan klasörden silinemedi: %s", ad, exc_info=True)
 
 
 class Database:
@@ -305,12 +384,19 @@ class Database:
     """
 
     def __init__(self, server=DB_SERVER, database=DB_NAME,
-                 user=DB_USER, password=DB_PASSWORD):
+                 user=DB_USER, password=DB_PASSWORD,
+                 init_schema=AYARLAR["init_schema"]):
         self.server = server
         self.database = database
         self.user = user
         self.password = password
-        self._init_schema()
+        # Şema DDL'i her açılışta production'a karşı çalıştırılmaz (AGENTS.md
+        # §9.1); yalnızca init_schema açıkça verilirse çalışır. Aksi halde
+        # sunucuya erişim burada denenir ki açılışta hızlıca hata verilebilsin.
+        if init_schema:
+            self._init_schema()
+        else:
+            self._fetch("SELECT 1")
 
     def _connect(self):
         """Veritabanına bağlantı açar (her işlem için yeni bağlantı)."""
@@ -344,34 +430,77 @@ class Database:
                 cur.execute(sql)
             conn.commit()
 
-    def _insert_returning_id(self, sql, params):
+    def _transaction(self, islem):
+        """
+        islem(cursor)'ı tek bir transaction içinde çalıştırır: hepsi yazılır ya
+        da hiçbiri. Böylece çok satırlı kayıtlar yarım kalmaz ve çağıran taraf
+        hata durumunda klasöre kopyaladığı dosyaları güvenle geri alabilir.
+        """
+        with closing(self._connect()) as conn:
+            try:
+                sonuc = islem(conn.cursor())
+                conn.commit()
+                return sonuc
+            except Exception:
+                conn.rollback()
+                raise
+
+    @staticmethod
+    def _insert_returning_id(cur, sql, params):
         """
         INSERT ... OUTPUT INSERTED.id çalıştırır ve oluşan kimliği döndürür.
         (SCOPE_IDENTITY() yerine OUTPUT kullanılır: tek sonuç kümesi döndüğü
         için pymssql'de ayrıca nextset() gezinmesi gerekmez.)
         """
-        with closing(self._connect()) as conn:
-            cur = conn.cursor()
-            cur.execute(sql, params)
-            row = cur.fetchone()
-            conn.commit()
-            return int(row[0])
+        cur.execute(sql, params)
+        return int(cur.fetchone()[0])
+
+    @classmethod
+    def _dosyalari_bagla(cls, cur, dosyalar, activity_idler):
+        """Dosya satırlarını yazar ve her birini verilen kayıtların hepsine bağlar."""
+        for dosya_adi, saklanan_ad, boyut in dosyalar:
+            file_id = cls._insert_returning_id(
+                cur,
+                "INSERT INTO dbo.files (dosya_adi, saklanan_ad, boyut) "
+                "OUTPUT INSERTED.id VALUES (%s, %s, %s)",
+                (dosya_adi, saklanan_ad, boyut),
+            )
+            for activity_id in activity_idler:
+                cur.execute(
+                    "INSERT INTO dbo.activity_files (activity_id, file_id) "
+                    "VALUES (%s, %s)",
+                    (activity_id, file_id),
+                )
 
     def _init_schema(self):
-        """dbo.activities tablosunu ve indeksini (yoksa) oluşturur."""
+        """Tabloları ve indeksleri (yoksa) oluşturur. Bkz. docs/schema.sql"""
         with closing(self._connect()) as conn:
             cur = conn.cursor()
             for ddl in DDL_STATEMENTS:
                 cur.execute(ddl)
             conn.commit()
 
-    def add_activity(self, donem, okul, seviye, etkinlik_adi):
-        """Yeni bir kurumsal sertifika kaydı ekler ve oluşan id'yi döndürür."""
-        return self._insert_returning_id(
-            "INSERT INTO dbo.activities (donem, okul, seviye, etkinlik_adi) "
-            "OUTPUT INSERTED.id VALUES (%s, %s, %s, %s)",
-            (donem, okul, seviye, etkinlik_adi),
-        )
+    def create_activities(self, donem, okullar, seviyeler, etkinlik_adi, dosyalar):
+        """
+        Her okul x seviye kombinasyonu için bir kayıt oluşturur; klasöre
+        kopyalanmış dosyaları [(dosya_adi, saklanan_ad, boyut)] bir kez yazıp
+        oluşan tüm kayıtlara bağlar. Tek transaction'dır; id listesini döndürür.
+        """
+        def islem(cur):
+            idler = [
+                self._insert_returning_id(
+                    cur,
+                    "INSERT INTO dbo.activities (donem, okul, seviye, etkinlik_adi) "
+                    "OUTPUT INSERTED.id VALUES (%s, %s, %s, %s)",
+                    (donem, okul, seviye, etkinlik_adi),
+                )
+                for okul in okullar
+                for seviye in seviyeler
+            ]
+            self._dosyalari_bagla(cur, dosyalar, idler)
+            return idler
+
+        return self._transaction(islem)
 
     def find_activities(self, donem, okul, seviye):
         """
@@ -417,16 +546,14 @@ class Database:
 
     # --- Dosya ekleri -------------------------------------------------------
 
-    def add_file(self, dosya_adi, saklanan_ad, boyut):
+    def add_files(self, activity_id, dosyalar):
         """
-        Paylaşılan klasöre kopyalanmış bir dosyanın kaydını oluşturur ve dosya
-        id'sini döndürür. Dosyanın kendisi burada değil, depoya_kopyala() ile
-        klasöre yazılır.
+        Paylaşılan klasöre kopyalanmış dosyaları [(dosya_adi, saklanan_ad,
+        boyut)] var olan bir kayda ekler. Tek transaction'dır: hata olursa hiçbir
+        satır kalmaz. Dosyaların kendisi depoya_kopyala() ile klasöre yazılır.
         """
-        return self._insert_returning_id(
-            "INSERT INTO dbo.files (dosya_adi, saklanan_ad, boyut) "
-            "OUTPUT INSERTED.id VALUES (%s, %s, %s)",
-            (dosya_adi, saklanan_ad, boyut),
+        self._transaction(
+            lambda cur: self._dosyalari_bagla(cur, dosyalar, [activity_id])
         )
 
     def _sahipsiz_dosyalari_temizle(self):
@@ -440,13 +567,6 @@ class Database:
             adlar = [row[0] for row in cur.fetchall()]
             conn.commit()
             return adlar
-
-    def link_file(self, activity_id, file_id):
-        """Var olan bir dosyayı bir kayda bağlar (içerik kopyalanmaz)."""
-        self._execute(
-            "INSERT INTO dbo.activity_files (activity_id, file_id) VALUES (%s, %s)",
-            (activity_id, file_id),
-        )
 
     def list_files(self, activity_id):
         """
@@ -477,6 +597,16 @@ class Database:
 # ---------------------------------------------------------------------------
 # DÖNEM YARDIMCI FONKSİYONLARI
 # ---------------------------------------------------------------------------
+
+def donem_gecerli(donem):
+    """
+    "2025-2026" biçimini ve ikinci yılın birinciden tam bir fazla olduğunu
+    doğrular. "2025-26" gibi girdiler geriye taramayı (donem_bir_yil_geri)
+    bozacağı ve kolon 9 karakter olduğu için kabul edilmez.
+    """
+    eslesme = DONEM_DESENI.match(donem or "")
+    return bool(eslesme) and int(eslesme[2]) == int(eslesme[1]) + 1
+
 
 def donem_bir_yil_geri(donem):
     """
@@ -792,8 +922,8 @@ class EkDosyalarDialog(QDialog):
         self.liste.clear()
         try:
             kayitlar = self.db.list_files(self.activity_id)
-        except pymssql.Error as exc:
-            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+        except pymssql.Error:
+            hata_bildir(self, "Veritabanı Hatası", "Veritabanı işlemi tamamlanamadı.")
             return
 
         if not kayitlar:
@@ -883,8 +1013,8 @@ class EkDosyalarDialog(QDialog):
         try:
             mevcut_adlar = {ad for _id, ad, _sa, _b, _t
                             in self.db.list_files(self.activity_id)}
-        except pymssql.Error as exc:
-            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+        except pymssql.Error:
+            hata_bildir(self, "Veritabanı Hatası", "Veritabanı işlemi tamamlanamadı.")
             return
 
         secilenler = dosya_secimlerini_dogrula(self, yollar, mevcut_adlar)
@@ -909,22 +1039,14 @@ class EkDosyalarDialog(QDialog):
             )
             return
 
-        yazilanlar = []                  # veritabanı satırı oluşmuş saklanan adlar
+        # Veritabanı yazımı tek transaction'dır: başarısızsa hiçbir satır
+        # kalmaz, bu yüzden klasöre atılan kopyaların hepsi güvenle geri alınır.
         try:
-            for ad, saklanan_ad, boyut in kopyalanan:
-                file_id = self.db.add_file(ad, saklanan_ad, boyut)
-                # Satır oluştuktan sonra kopya artık geri alınmaz; yoksa
-                # veritabanı klasörde olmayan bir dosyayı gösterir.
-                yazilanlar.append(saklanan_ad)
-                self.db.link_file(self.activity_id, file_id)
-        except pymssql.Error as exc:
-            depodan_sil([s for _, s, _ in kopyalanan if s not in yazilanlar])
-            self.degisti = bool(yazilanlar)
-            self._reload()
-            QMessageBox.critical(
-                self, "Veritabanı Hatası",
-                f"{exc}\n\n{len(yazilanlar)} / {len(kopyalanan)} dosya eklendi.",
-            )
+            self.db.add_files(self.activity_id, kopyalanan)
+        except pymssql.Error:
+            depodan_sil([s for _, s, _ in kopyalanan])
+            hata_bildir(self, "Veritabanı Hatası",
+                        "Dosyalar kayda eklenemedi; hiçbir dosya eklenmedi.")
             return
 
         self.degisti = True
@@ -951,8 +1073,8 @@ class EkDosyalarDialog(QDialog):
             return
         try:
             self.db.unlink_file(self.activity_id, file_id)
-        except pymssql.Error as exc:
-            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+        except pymssql.Error:
+            hata_bildir(self, "Veritabanı Hatası", "Veritabanı işlemi tamamlanamadı.")
             return
         self.degisti = True
         self._reload()
@@ -1066,6 +1188,7 @@ class MainWindow(QMainWindow):
         # Dönem girişi (serbest metin; "2025-2026" formatında).
         self.m_donem = QLineEdit()
         self.m_donem.setPlaceholderText("Örn: 2025-2026")
+        self.m_donem.setMaxLength(9)              # dbo.activities.donem NVARCHAR(9)
 
         # Okul seçimi: birden fazla okul aynı anda seçilebilsin diye checkbox grubu.
         self.m_okul_checks = {}
@@ -1078,6 +1201,7 @@ class MainWindow(QMainWindow):
         # Etkinlik / Program adı
         self.m_etkinlik = QLineEdit()
         self.m_etkinlik.setPlaceholderText("Örn: Siemens AI Certificate Program")
+        self.m_etkinlik.setMaxLength(ETKINLIK_ADI_AZAMI)
 
         # Dosya ekleri: seçilenler önce sadece listelenir, "Kaydet"e basıldığında
         # paylaşılan klasöre kopyalanır.
@@ -1314,10 +1438,11 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if "-" not in donem:
+        if not donem_gecerli(donem):
             QMessageBox.warning(
                 self, "Geçersiz Dönem",
-                "Dönem 'YYYY-YYYY' formatında olmalıdır. Örn: 2025-2026",
+                "Dönem 'YYYY-YYYY' formatında ve ardışık iki yıl olmalıdır. "
+                "Örn: 2025-2026",
             )
             return
 
@@ -1339,25 +1464,18 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Seçilen her okul x seviye kombinasyonu için ayrı bir kayıt oluşturulur.
+        # Seçilen her okul x seviye kombinasyonu için ayrı bir kayıt oluşturulur;
+        # dosya klasöre bir kez kopyalanmıştır ve oluşan tüm kayıtlara bağlanır.
+        # Tek transaction olduğundan hata durumunda yarım kayıt kalmaz ve
+        # kopyalar güvenle geri alınabilir.
         try:
-            yeni_idler = []
-            for okul in secili_okullar:
-                for seviye in secili_seviyeler:
-                    yeni_idler.append(
-                        self.db.add_activity(donem, okul, seviye, etkinlik)
-                    )
-
-            # Dosya klasöre bir kez kopyalanır ve oluşan tüm kayıtlara bağlanır;
-            # her kombinasyon için ayrı bir kopya oluşturulmaz.
-            for ad, saklanan_ad, boyut in kopyalanan:
-                file_id = self.db.add_file(ad, saklanan_ad, boyut)
-                for activity_id in yeni_idler:
-                    self.db.link_file(activity_id, file_id)
-        except pymssql.Error as exc:
-            # Veritabanı yazımı başarısızsa klasöre atılan kopyalar geri alınır.
+            self.db.create_activities(
+                donem, secili_okullar, secili_seviyeler, etkinlik, kopyalanan
+            )
+        except pymssql.Error:
             depodan_sil([s for _, s, _ in kopyalanan])
-            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+            hata_bildir(self, "Veritabanı Hatası",
+                        "Kayıt veritabanına yazılamadı; hiçbir kayıt oluşturulmadı.")
             return
 
         kombinasyonlar = "\n".join(
@@ -1404,8 +1522,8 @@ class MainWindow(QMainWindow):
 
         try:
             self.db.delete_activity(activity_id)
-        except pymssql.Error as exc:
-            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+        except pymssql.Error:
+            hata_bildir(self, "Veritabanı Hatası", "Veritabanı işlemi tamamlanamadı.")
             return
 
         self._refresh_donem_combos()
@@ -1425,6 +1543,14 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Dönem kutusu elle de yazılabildiği için biçim burada da denetlenir.
+        if not donem_gecerli(donem):
+            QMessageBox.warning(
+                self, "Geçersiz Dönem",
+                "Dönem 'YYYY-YYYY' formatında olmalıdır. Örn: 2025-2026",
+            )
+            return
+
         if okul == "Seçiniz" or seviye == "Seçiniz":
             QMessageBox.warning(
                 self, "Eksik Bilgi",
@@ -1434,8 +1560,8 @@ class MainWindow(QMainWindow):
 
         try:
             rows = generate_retrospective(self.db, donem, okul, seviye)
-        except pymssql.Error as exc:
-            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+        except pymssql.Error:
+            hata_bildir(self, "Veritabanı Hatası", "Veritabanı işlemi tamamlanamadı.")
             return
 
         self.son_rapor = rows
@@ -1676,10 +1802,13 @@ class MainWindow(QMainWindow):
         mevcut = self.q_donem.currentText()
         try:
             donemler = self.db.distinct_donemler()
-        except pymssql.Error as exc:
+        except pymssql.Error:
             # Sunucuya erişilemiyorsa uygulama çökmemeli; combobox mevcut
             # içeriğiyle kalır, durum çubuğunda uyarı gösterilir.
-            self.statusBar().showMessage(f"Dönem listesi alınamadı: {exc}")
+            log.exception("Dönem listesi alınamadı")
+            self.statusBar().showMessage(
+                "Dönem listesi alınamadı (ayrıntı günlük dosyasında)."
+            )
             return
         self.q_donem.clear()
         self.q_donem.addItems(donemler)
@@ -1696,19 +1825,33 @@ def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(CORPORATE_QSS)
     app.setFont(QFont("Segoe UI", 10))
+    gunlugu_kur()
 
-    # MainWindow yapıcısı ilk MSSQL bağlantısını kurar (şema kontrolü). Sunucu
-    # kapalı/erişilemez durumdaysa çıplak bir traceback yerine anlaşılır bir
-    # uyarı gösterilir.
+    # Kimlik bilgisi kaynak koda gömülü olmadığından, yapılandırma eksikse
+    # bağlantı denemeden önce kullanıcıya nereye ne yazacağı söylenir.
+    if not DB_USER or not DB_PASSWORD:
+        QMessageBox.critical(
+            None, "Yapılandırma Eksik",
+            "Veritabanı kullanıcı adı/parolası tanımlı değil.\n\n"
+            f"Şu dosyayı oluşturun:\n{AYAR_DOSYASI}\n\n"
+            "[database] bölümüne user ve password değerlerini yazın "
+            "(ya da CORPCERT_USER / CORPCERT_PASSWORD ortam değişkenlerini "
+            "tanımlayın). Değerleri sistem yöneticinizden alın.",
+        )
+        sys.exit(1)
+
+    # MainWindow yapıcısı ilk MSSQL bağlantısını kurar. Sunucu kapalı veya
+    # erişilemez durumdaysa çıplak bir traceback yerine anlaşılır bir uyarı
+    # gösterilir.
     try:
         window = MainWindow()
-    except pymssql.Error as exc:
-        QMessageBox.critical(
+    except pymssql.Error:
+        hata_bildir(
             None, "Veritabanına Bağlanılamadı",
             f"{DB_NAME} ({DB_SERVER}) veritabanına bağlanılamadı.\n\n"
-            f"{exc}\n\n"
-            "Bu makinenin internet erişimini ve 1433 numaralı portun "
-            "güvenlik duvarı tarafından engellenmediğini kontrol edin.",
+            "Bu makinenin ağ erişimini, 1433 numaralı portun güvenlik duvarı "
+            "tarafından engellenmediğini ve corpcert.ini'deki kullanıcı "
+            "bilgilerini kontrol edin.",
         )
         sys.exit(1)
 

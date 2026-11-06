@@ -2,17 +2,24 @@
 """
 PyInstaller yapılandırması — tek dosyalık (onefile) dağıtım.
 
-Çıktı: dist/CorporateCertificate.exe
+Kök dizinden çalıştırılır:
+    pyinstaller --noconfirm --clean docs/CorporateCertificate.spec
+Çıktı: dist/CorporateCertificate.exe (build/ ve dist/ git'e girmez).
+
+Spec içindeki göreli yollar spec dosyasının klasörüne (docs/) göredir; bu
+yüzden kaynak '../src/main.py' olarak verilir.
 
 Bu tek dosya, kurulum gerektirmeden herhangi bir 64-bit Windows makinesine
 kopyalanıp çalıştırılabilir. Python, PyQt6 ve pymssql (FreeTDS TDS istemcisi
 dahil) exe'nin içindedir; hedef makineye ayrıca ODBC sürücüsü kurmak gerekmez.
-Uygulama veriyi daima main.py'deki merkezî MSSQL sunucusundan okur; yanına
-herhangi bir veritabanı dosyası kopyalanmaz.
+Uygulama veriyi daima merkezî MSSQL sunucusundan okur; yanına herhangi bir
+veritabanı dosyası kopyalanmaz. Bağlantı bilgileri exe'ye gömülmez: exe'nin
+yanındaki corpcert.ini veya CORPCERT_* ortam değişkenlerinden okunur
+(bkz. docs/dagitim.md).
 """
 
 a = Analysis(
-    ['main.py'],
+    ['../src/main.py'],
     pathex=[],
     binaries=[],
     datas=[],

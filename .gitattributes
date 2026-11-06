@@ -1,0 +1,11 @@
+* text=auto eol=crlf
+
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.exe  binary
+*.pyc  binary
+*.db   binary
+*.xlsx binary
+*.docx binary
+*.pdf  binary

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# PyInstaller derleme çıktısı (docs/CorporateCertificate.spec ile üretilir)
+build/
+dist/
+
+# Veritabanı dosyaları asla commit edilmez (AGENTS.md §14)
+*.db
+*.sqlite
+*.mdf
+
+# Yerel yapılandırma: veritabanı kullanıcı adı/parolası içerir (AGENTS.md §10)
+corpcert.ini
+
+# Dışa aktarılan raporlar
+Rapor_*.csv
